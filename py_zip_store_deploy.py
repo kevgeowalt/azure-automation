@@ -5,6 +5,9 @@ import subprocess
 import platform
 import json
 
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.web import WebSiteManagementClient
+
 
 class AzureCredentials:
     def __init__(self, subscription_id, name, state):
@@ -98,9 +101,9 @@ def azure_login_sp(useInteractive=True):
     login_data_object = json.loads(login_data)
 
     target_subscription = None
-    azure_login_info   = None
-    
-    if len(login_data_object) > 1:      
+    azure_login_info = None
+
+    if len(login_data_object) > 1:
         for subscription in login_data_object:
             if subscription.get("id") == SecureEnvironmentVars.SUBSCRIPTION_ID:
                 target_subscription = subscription
@@ -112,23 +115,53 @@ def azure_login_sp(useInteractive=True):
             )
     else:
         target_subscription = login_data_object[0]
-        
+        SecureEnvironmentVars.SUBSCRIPTION_ID = target_subscription.get("id", "")
+
     azure_login_info = AzureCredentials(
-            subscription_id=target_subscription.get("id", ""),
-            name=target_subscription.get("name", ""),
-            state=target_subscription.get("state", ""),
-        )
-    
+        subscription_id=target_subscription.get("id", ""),
+        name=target_subscription.get("name", ""),
+        state=target_subscription.get("state", ""),
+    )
+
     return azure_login_info
 
 
+def azure_webapp_deploy_app(resource_group_name, app_service_name, zip_path):
+    credential = DefaultAzureCredential()
+
+    web_client = WebSiteManagementClient(
+        credential, SecureEnvironmentVars.SUBSCRIPTION_ID
+    )
+
+    app_service = web_client.web_apps.get(resource_group_name, app_service_name)
+    
+    # Todo: * check if available or not in running state
+    # 
+    
+    with open(zip_path, "rb") as package_file:
+        result = web_client.web_apps.create_deployment(
+            resource_group_name,
+            app_service_name,
+            {
+                "packageUri": zip_path,
+                "name": os.path.basename(zip_path),
+                "command_id": "deploy",
+                "is_temp": False,
+            },
+        )
+
+    deployment_id = result.id
+    deployment_status = web_client.deployments.get(resource_group_name, app_service_name, deployment_id)
+    print(f"Deployment Status: {deployment_status.status}")
+    
 def main():
     try:
         args = terminal_parse_arguments()
         ARGUMENTS = TerminalArgs(args=args)
 
         login = azure_login_sp()
-        
+        azure_webapp_deploy_app(ARGUMENTS.RESOURCE_GROUP, ARGUMENTS.AZURE_SERVICE_NAME)
+
     except Exception as e:
         print(str(e))
         sys.exit()
