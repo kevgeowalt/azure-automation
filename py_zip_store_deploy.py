@@ -1,79 +1,134 @@
 import argparse
 import sys
+import os
+import subprocess
+import platform
+import json
 
-# central config for easy config update
-# help: represents the help text shown when executing script `python3 pz_zip_store_deploy.py -h`
-# code: represents the terminal parameter when executing script `python3 pz_zip_store_deploy.py -s [service_principal_id]`
-# arugument_name: represents the name attached to the code `python3 pz_zip_store_deploy.py --principal [service_principal_id]`
-PARSER_CONFIG = {
-    "s": {
-        "help": "Azure Service Principal ID",
-        "code": "-s",
-        "arugment_name": "--principal",
-    },
-}
 
-# get help text associated with a specific key
-def get_help_msg(key, inner_key="help"):
-    body = PARSER_CONFIG[key]
-    return body[inner_key]
+class AzureCredentials:
+    def __init__(self, subscription_id, name, state):
+        self.subscription_id = subscription_id
+        self.name = name
+        self.state = state
 
-# get code text associated with a specific key
-def get_argument_id(key, inner_key="code"):
-    body = PARSER_CONFIG[key]
-    return body[inner_key]
 
-# get arument name text associated with a specific key
-def get_argument_name(key, inner_key="arugment_name"):
-    body = PARSER_CONFIG[key]
-    return body[inner_key]
+class TerminalArgs:
+    def __init__(self, args):
+        self.STORAGE_ACCOUNT = args.storage_account
+        self.DEPLOY = args.deploy
+        self.SERVICE = args.service
+        self.RESOURCE_GROUP = args.resource_group
+        self.AZURE_SERVICE_NAME = args.azure_service_name
 
-# configure argparse library
-def terminal_argument_parse():
+
+class SecureEnvironmentVars:
+    SERVICE_PRINCIPAL_ID = os.environ.get("AZURE_SERVICE_PRINCIPAL_ID", "")
+    SERVICE_PRINCIPAL_SECRET = os.environ.get("AZURE_SERVICE_PRINCIPAL_SECRET", "")
+    TENANT_ID = os.environ.get("AZURE_TENANT_ID", "")
+    SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
+
+    def __init__(self) -> None:
+        pass
+
+
+def terminal_parse_arguments():
     try:
         parser = argparse.ArgumentParser(description="")
 
         parser.add_argument(
-            get_argument_id("s"),
-            get_argument_name("s"),
-            type=str,
-            help=get_help_msg("s"),
+            "--storage-account",
+            required=True,
+            help="Azure Storage Account Name. Build files (.zip) will be stored in [sotrageaccoutname]/builds/[service]/[date]",
         )
         parser.add_argument(
-            "-p",
-            "--password",
-            type=str,
-            help="Password associated with Service Principal",
+            "--deploy", action="store_true", help="Deploy to specified Azure Service"
         )
-        parser.add_argument("-t", "--tenant", type=str, help="Tenant ID")
-        parser.add_argument("-x", "--subscription", type=str, help="Subscription ID")
+        parser.add_argument("--service", required=True, choices=["func", "app"])
         parser.add_argument(
-            "-d",
-            "--directory",
-            type=str,
-            help="Full path to the folder to be deployed.",
+            "--resource-group",
+            required=False,
+            help="Resource Group for Service being deployed [Function, App Service]",
+        )
+        parser.add_argument(
+            "--azure-service-name",
+            required=False,
+            help="Name of the azure function/app service being deployed",
         )
 
-        args = parser.parse_args()
+        return parser.parse_args()
 
-        return args
     except Exception as e:
         print(str(e))
         sys.exit()
 
 
+def azure_parse_command(command):
+    command = str(command)
+    sections = command.split()
+    return sections
+
+
+def azure_login_sp(useInteractive=True):
+    # windows sometimes forces third party scripts to use az.cmd when executing processes
+    # if running on a windows vm or local machine, thenscript uses 'az.cmd' otherwise
+    # uses 'az'
+    az_command = "az.cmd" if platform.system().lower() == "windows" else "az"
+    login_command = ""
+
+    if useInteractive:
+        # opens a browser
+        login_command = f"{az_command} login --output json"
+    else:
+        # uses service principal for non-interactive login
+        login_data = ""
+
+    secure_login = subprocess.Popen(
+        azure_parse_command(login_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    output, error = secure_login.communicate()
+
+    if secure_login.returncode != 0:
+        raise Exception(f"Azure Login Process Failed: {error.decode()}")
+
+    login_data = output.decode()
+    login_data_object = json.loads(login_data)
+
+    target_subscription = None
+    azure_login_info   = None
+    
+    if len(login_data_object) > 1:      
+        for subscription in login_data_object:
+            if subscription.get("id") == SecureEnvironmentVars.SUBSCRIPTION_ID:
+                target_subscription = subscription
+                break
+
+        if not target_subscription:
+            raise Exception(
+                f"No entry found with subscription_id: {SecureEnvironmentVars.SUBSCRIPTION_ID}"
+            )
+    else:
+        target_subscription = login_data_object[0]
+        
+    azure_login_info = AzureCredentials(
+            subscription_id=target_subscription.get("id", ""),
+            name=target_subscription.get("name", ""),
+            state=target_subscription.get("state", ""),
+        )
+    
+    return azure_login_info
+
+
 def main():
     try:
-        args = terminal_argument_parse()
-        CONFIG = {
-            "principal": args.principal,
-            "password": args.password,
-            "tenant": args.tenant,
-            "subscription": args.subscription,
-            "directory": args.directory,
-        }
+        args = terminal_parse_arguments()
+        ARGUMENTS = TerminalArgs(args=args)
 
-        print(CONFIG["principal"])
+        login = azure_login_sp()
+        
     except Exception as e:
         print(str(e))
         sys.exit()
